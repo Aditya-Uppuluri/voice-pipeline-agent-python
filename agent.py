@@ -1,4 +1,6 @@
 import logging
+import os
+import json
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -8,10 +10,10 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     WorkerOptions,
+    ChatContext,
     cli,
     metrics,
     RoomInputOptions,
-    ChatContext,
 )
 from livekit.plugins import (
     cartesia,
@@ -19,53 +21,30 @@ from livekit.plugins import (
     deepgram,
     noise_cancellation,
     silero,
+    google,
 )
-# from livekit.plugins.turn_detector.multilingual import MultilingualModel
-from flask import Flask, request, jsonify
-import threading
-
-app = Flask(__name__)
-dynamic_context = {
-    "payload": None
-}
 
 load_dotenv(dotenv_path=".env.local")
 logger = logging.getLogger("voice-agent")
 
-@app.route("/inject-context", methods=["POST"])
-def inject_context():
-    data = request.get_json()
-    # Accept "output" instead of "payload"
-    payload = data.get("payload") or data.get("output")
-    if not payload:
-        return jsonify({"error": "Missing 'output' in request"}), 400
-
-    dynamic_context["payload"] = payload
-    print(f"[CONTEXT INJECTED] {payload}")  # Optional logging
-    return jsonify({"message": "Output injected successfully!"}), 200
-
-
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 
 class Assistant(Agent):
     def __init__(self, chat_ctx: ChatContext) -> None:
         super().__init__(
             chat_ctx=chat_ctx,
-            instructions="You are a voice assistant created by LiveKit.",
+            instructions="You are a voice assistant created by LiveKit. Your interface with users will be voice. "
+                         "Use short and concise responses, and avoid unpronounceable punctuation.",
             stt=deepgram.STT(),
-            llm=openai.LLM(model="gpt-4o-mini"),
+            llm=google.LLM(api_key=GOOGLE_API_KEY, model="gemini-2.0-flash-exp", temperature=0.8),
             tts=cartesia.TTS(),
-            # turn_detection=MultilingualModel(),
         )
-
 
     async def on_enter(self):
-        context = dynamic_context.get("payload") or "Hey, how can I help you today?"
-        self.session.generate_reply(
-            instructions=context,
-            allow_interruptions=True
+        await self.session.generate_reply(
+            instructions="Hey, how can I help you today?", allow_interruptions=True
         )
-
 
 
 def prewarm(proc: JobProcess):
@@ -73,24 +52,34 @@ def prewarm(proc: JobProcess):
 
 
 async def entrypoint(ctx: JobContext):
-    logger.info(f"connecting to room {ctx.room.name}")
-    
-    # 📦 Pull your dynamic_context payload before connecting
-    context_payload = dynamic_context.get("payload")
-    logger.info(f"Using context from /inject-context: {context_payload}")
-
-    # ✅ Create a ChatContext and inject your payload
-    chat_ctx = ChatContext()
-    if context_payload:
-        chat_ctx.add_message(
-            role="assistant",
-            content=context_payload
-        )
-
+    logger.info(f"Connecting to room {ctx.room.name}")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
+    # Parse raw metadata sent as stringified JSON
+    try:
+        metadata_raw = ctx.job.metadata or ""
+        metadata = json.loads(metadata_raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse metadata: {e}")
+        metadata = {}
+
+    topic = metadata.get("topic", "")
+    technical_questions = metadata.get("technical_questions", [])
+    behavioral_questions = metadata.get("behavioral_questions", [])
+
+    # Create context
+    initial_ctx = ChatContext()
+    if topic:
+        initial_ctx.add_message(role="assistant", content=f"The interview is for: {topic}")
+    for q in technical_questions:
+        if "question" in q:
+            initial_ctx.add_message(role="user", content=f"Technical Question: {q['question']}")
+    for q in behavioral_questions:
+        if "question" in q:
+            initial_ctx.add_message(role="user", content=f"Behavioral Question: {q['question']}")
+
     participant = await ctx.wait_for_participant()
-    logger.info(f"starting voice assistant for participant {participant.identity}")
+    logger.info(f"Starting session for participant {participant.identity}")
 
     usage_collector = metrics.UsageCollector()
 
@@ -103,18 +92,15 @@ async def entrypoint(ctx: JobContext):
         min_endpointing_delay=0.5,
         max_endpointing_delay=5.0,
     )
-
     session.on("metrics_collected", on_metrics_collected)
 
-    # ✅ Pass the context into the agent
     await session.start(
         room=ctx.room,
-        agent=Assistant(chat_ctx=chat_ctx),
+        agent=Assistant(chat_ctx=initial_ctx),
         room_input_options=RoomInputOptions(
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
-
 
 
 if __name__ == "__main__":
