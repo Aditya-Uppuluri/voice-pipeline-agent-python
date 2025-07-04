@@ -20,7 +20,7 @@ from livekit.plugins import (
     noise_cancellation,
     silero,
 )
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+# from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from flask import Flask, request, jsonify
 import threading
 
@@ -55,7 +55,7 @@ class Assistant(Agent):
             stt=deepgram.STT(),
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=cartesia.TTS(),
-            turn_detection=MultilingualModel(),
+            # turn_detection=MultilingualModel(),
         )
 
 
