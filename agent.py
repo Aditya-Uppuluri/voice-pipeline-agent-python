@@ -33,16 +33,25 @@ class Assistant(Agent):
     def __init__(self, chat_ctx: ChatContext) -> None:
         super().__init__(
             chat_ctx=chat_ctx,
-            instructions="You are a voice assistant created by LiveKit. Your interface with users will be voice. "
-                         "Use short and concise responses, and avoid unpronounceable punctuation.",
+            instructions=(
+                "You are a professional interview agent conducting spoken interviews for a specific role. "
+                "The interview topic, background, and questions are provided in your initial context. "
+                "Begin the conversation as soon as the participant joins, and guide the interview smoothly. "
+                "Ask one question at a time, listen carefully, and keep your responses short and clear. "
+                "Speak naturally and avoid using complex or unpronounceable punctuation. "
+                "If the context contains both technical and behavioral questions, balance them appropriately. "
+                "Do not repeat the context; use it to guide your dialogue."
+            ),
             stt=deepgram.STT(),
             llm=google.LLM(api_key=GOOGLE_API_KEY, model="gemini-2.0-flash-exp", temperature=0.8),
             tts=cartesia.TTS(),
         )
 
     async def on_enter(self):
+        # Greet and kick off the interview as soon as the user joins
         await self.session.generate_reply(
-            instructions="Hey, how can I help you today?", allow_interruptions=True
+            instructions="Greet the participant and start the interview with the first question from your context.",
+            allow_interruptions=True
         )
 
 
@@ -54,10 +63,17 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Connecting to room {ctx.room.name}")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
-    # Receive raw context as a string directly from n8n HTTP node
-    raw_context = ctx.job.metadata or ""
+    # ✅ Load context from local file written by server.py (not metadata)
+    context_file = "latest_context.txt"
+    if os.path.exists(context_file):
+        with open(context_file, "r") as f:
+            raw_context = f.read()
+        logger.info("Loaded context from latest_context.txt")
+    else:
+        raw_context = ""
+        logger.warning("No context file found. Starting with empty context.")
 
-    # Inject entire string as a single assistant message (do NOT parse/split)
+    # ✅ Inject as single assistant message
     initial_ctx = ChatContext()
     if raw_context.strip():
         initial_ctx.add_message(role="assistant", content=raw_context)
