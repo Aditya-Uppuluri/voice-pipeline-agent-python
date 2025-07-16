@@ -103,8 +103,8 @@ async def entrypoint(ctx: JobContext):
     # Create session with better VAD settings
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        min_endpointing_delay=1.0,  # Increased from 0.5 to wait longer for user speech
-        max_endpointing_delay=8.0,  # Increased from 5.0 to allow longer pauses
+        min_endpointing_delay=3.0,  # Increased from 0.5 to wait longer for user speech
+        max_endpointing_delay=12.0,  # Increased from 5.0 to allow longer pauses
     )
     session.on("metrics_collected", on_metrics_collected)
 
